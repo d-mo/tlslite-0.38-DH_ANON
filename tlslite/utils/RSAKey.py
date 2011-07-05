@@ -2,6 +2,7 @@
 
 from cryptomath import *
 
+from hashlib import sha1
 
 class RSAKey:
     """This is an abstract base class for RSA keys.
@@ -73,7 +74,7 @@ class RSAKey:
         """
         if not isinstance(bytes, type("")):
             bytes = bytesToString(bytes)
-        hashBytes = stringToBytes(sha.sha(bytes).digest())
+        hashBytes = stringToBytes(sha1(bytes).digest())
         prefixedHashBytes = self._addPKCS1SHA1Prefix(hashBytes)
         sigBytes = self.sign(prefixedHashBytes)
         return sigBytes
@@ -94,7 +95,7 @@ class RSAKey:
         """
         if not isinstance(bytes, type("")):
             bytes = bytesToString(bytes)
-        hashBytes = stringToBytes(sha.sha(bytes).digest())
+        hashBytes = stringToBytes(sha1(bytes).digest())
         prefixedHashBytes = self._addPKCS1SHA1Prefix(hashBytes)
         return self.verify(sigBytes, prefixedHashBytes)
 

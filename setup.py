@@ -15,7 +15,7 @@ else:
     exts = None
 
 setup(name="tlslite",
-      version="0.3.8",
+      version="0.3.9",
       author="Trevor Perrin",
       author_email="trevp@trevp.net",
       url="http://trevp.net/tlslite/",

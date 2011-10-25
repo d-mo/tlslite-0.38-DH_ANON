@@ -217,7 +217,7 @@ class TLSRecordLayer:
             returnStr = self._readBuffer[:max]
             self._readBuffer = self._readBuffer[max:]
             yield returnStr
-        except:
+        except Exception as e:
             self._shutdown(False)
             raise
 
@@ -268,7 +268,7 @@ class TLSRecordLayer:
                     yield result
                 skipEmptyFrag = True #only send an empy fragment on 1st message
                 index += 1
-        except:
+        except Exception as e:
             self._shutdown(False)
             raise
 
@@ -335,7 +335,7 @@ class TLSRecordLayer:
             except (socket.error, TLSAbruptCloseError):
                 #If the other side closes the socket, that's okay
                 self._shutdown(True)
-            except:
+            except Exception as e:
                 self._shutdown(False)
                 raise
 

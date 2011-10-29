@@ -289,6 +289,66 @@ class TLSConnection(TLSRecordLayer):
         for result in handshaker:
             pass
 
+    def handshakeClientAnonymous(self, session=None, settings=None, checker=None,
+                               async=False):
+        """Perform an anonymous handshake in the role of client.
+
+        This function performs an SSL or TLS handshake using an
+        anonymous Diffie Hellman ciphersuite.
+        
+        Like any handshake function, this can be called on a closed
+        TLS connection, or on a TLS connection that is already open.
+        If called on an open connection it performs a re-handshake.
+
+        If the function completes without raising an exception, the
+        TLS connection will be open and available for data transfer.
+
+        If an exception is raised, the connection will have been
+        automatically closed (if it was ever open).
+
+        @type session: L{tlslite.Session.Session}
+        @param session: A TLS session to attempt to resume.  If the
+        resumption does not succeed, a full handshake will be
+        performed.
+
+        @type settings: L{tlslite.HandshakeSettings.HandshakeSettings}
+        @param settings: Various settings which can be used to control
+        the ciphersuites, certificate types, and SSL/TLS versions
+        offered by the client.
+
+        @type checker: L{tlslite.Checker.Checker}
+        @param checker: A Checker instance.  This instance will be
+        invoked to examine the other party's authentication
+        credentials, if the handshake completes succesfully.
+
+        @type async: bool
+        @param async: If False, this function will block until the
+        handshake is completed.  If True, this function will return a
+        generator.  Successive invocations of the generator will
+        return 0 if it is waiting to read from the socket, 1 if it is
+        waiting to write to the socket, or will raise StopIteration if
+        the handshake operation is completed.
+
+        @rtype: None or an iterable
+        @return: If 'async' is True, a generator object will be
+        returned.
+
+        @raise socket.error: If a socket error occurs.
+        @raise tlslite.errors.TLSAbruptCloseError: If the socket is closed
+        without a preceding alert.
+        @raise tlslite.errors.TLSAlert: If a TLS alert is signalled.
+        @raise tlslite.errors.TLSAuthenticationError: If the checker
+        doesn't like the other party's authentication credentials.
+        """
+        handshaker = self._handshakeClientAsync(anonParams=(True),
+                                                session=session,
+                                                settings=settings,
+                                                checker=checker)
+        if async:
+            return handshaker
+        for result in handshaker:
+            pass
+        
     def handshakeClientSharedKey(self, username, sharedKey, settings=None,
                                  checker=None, async=False):
         """Perform a shared-key handshake in the role of client.
@@ -358,12 +418,12 @@ class TLSConnection(TLSRecordLayer):
             pass
 
     def _handshakeClientAsync(self, srpParams=(), certParams=(),
-                             unknownParams=(), sharedKeyParams=(),
+                             unknownParams=(), sharedKeyParams=(), anonParams=(),
                              session=None, settings=None, checker=None,
                              recursive=False):
 
         handshaker = self._handshakeClientAsyncHelper(srpParams=srpParams,
-                certParams=certParams, unknownParams=unknownParams,
+                certParams=certParams, unknownParams=unknownParams, anonParams=anonParams,
                 sharedKeyParams=sharedKeyParams, session=session,
                 settings=settings, recursive=recursive)
         for result in self._handshakeWrapperAsync(handshaker, checker):
@@ -371,7 +431,7 @@ class TLSConnection(TLSRecordLayer):
 
 
     def _handshakeClientAsyncHelper(self, srpParams, certParams, unknownParams,
-                               sharedKeyParams, session, settings, recursive):
+                               sharedKeyParams, anonParams, session, settings, recursive):
         if not recursive:
             self._handshakeStart(client=True)
 
@@ -480,6 +540,8 @@ class TLSConnection(TLSRecordLayer):
             cipherSuites += CipherSuite.getRsaSuites(settings.cipherNames)
         elif sharedKeyParams:
             cipherSuites += CipherSuite.getRsaSuites(settings.cipherNames)
+        elif anonParams:
+            cipherSuites += CipherSuite.getDhaSuites(settings.cipherNames)            
         else:
             cipherSuites += CipherSuite.getRsaSuites(settings.cipherNames)
 
@@ -707,6 +769,25 @@ class TLSConnection(TLSRecordLayer):
                     serverHelloDone = result
                 elif isinstance(msg, ServerHelloDone):
                     serverHelloDone = msg
+                    
+            #If the server chose a DH suite...
+            elif cipherSuite in CipherSuite.dhaSuites:
+                #Get ServerKeyExchange, ServerHelloDone
+                for result in self._getMsg(ContentType.handshake,
+                        HandshakeType.server_key_exchange, cipherSuite):
+                    if result in (0,1):
+                        yield result
+                    else:
+                        break
+                serverKeyExchange = result
+
+                for result in self._getMsg(ContentType.handshake,
+                        HandshakeType.server_hello_done):
+                    if result in (0,1):
+                        yield result
+                    else:
+                        break
+                serverHelloDone = result
             else:
                 raise AssertionError()
 
@@ -899,6 +980,25 @@ class TLSConnection(TLSRecordLayer):
                     for result in self._sendMsg(certificateVerify):
                         yield result
 
+            #If the server chose a DH suite...
+            elif cipherSuite in CipherSuite.dhaSuites:
+                #calculate Yc
+                dh_p = serverKeyExchange.dh_p
+                dh_g = serverKeyExchange.dh_g
+                dh_Xc = bytesToNumber(getRandomBytes(32))
+                dh_Ys = serverKeyExchange.dh_Ys
+                dh_Yc = powMod(dh_g, dh_Xc, dh_p)
+                #Send ClientKeyExchange
+                clientKeyExchange = ClientKeyExchange(cipherSuite,
+                                                      self.version)
+
+                clientKeyExchange.createDH(dh_Yc)
+                for result in self._sendMsg(clientKeyExchange):
+                    yield result                
+
+                #Calculate premaster secret
+                S = powMod(dh_Ys,dh_Xc,dh_p)
+                premasterSecret = numberToBytes(S) 
 
             #Create the session object
             self.session = Session()
@@ -1035,7 +1135,7 @@ class TLSConnection(TLSRecordLayer):
                              settings):
 
         self._handshakeStart(client=False)
-
+        
         if (not sharedKeyDB) and (not verifierDB) and (not certChain):
             raise ValueError("Caller passed no authentication credentials")
         if certChain and not privateKey:
@@ -1056,6 +1156,7 @@ class TLSConnection(TLSRecordLayer):
             cipherSuites += CipherSuite.getSrpSuites(settings.cipherNames)
         if sharedKeyDB or certChain:
             cipherSuites += CipherSuite.getRsaSuites(settings.cipherNames)
+        cipherSuites += CipherSuite.getDhaSuites(settings.cipherNames) 
 
         #Initialize acceptable certificate type
         certificateType = None
@@ -1109,7 +1210,7 @@ class TLSConnection(TLSRecordLayer):
         #Get the client nonce; create server nonce
         clientRandom = clientHello.random
         serverRandom = getRandomBytes(32)
-
+        
         #Calculate the first cipher suite intersection.
         #This is the 'privileged' ciphersuite.  We'll use it if we're
         #doing a shared-key resumption or a new negotiation.  In fact,
@@ -1484,8 +1585,49 @@ class TLSConnection(TLSRecordLayer):
                                         verifyBytes):
                     postFinishedError = (AlertDescription.decrypt_error,
                                          "Signature failed to verify")
+        elif cipherSuite in CipherSuite.dhaSuites:
+            dh_p = getRandomSafePrime(32, False) 
+            dh_g = getRandomNumber(2, dh_p)
+            dh_Xs = bytesToNumber(getRandomBytes(32))
+            dh_Ys = powMod(dh_g, dh_Xs, dh_p)
+            #Create ServerKeyExchange, signing it if necessary
+            serverKeyExchange = ServerKeyExchange(cipherSuite)
+            serverKeyExchange.createDH(dh_p,dh_g,dh_Ys)
 
+            #Send ServerHello[, Certificate], ServerKeyExchange,
+            #ServerHelloDone
+            msgs = []
+            serverHello = ServerHello()
+            serverHello.create(self.version, serverRandom, sessionID,
+                               cipherSuite, certificateType)
+            msgs.append(serverHello)
+            msgs.append(serverKeyExchange)
+            msgs.append(ServerHelloDone())
 
+            for result in self._sendMsgs(msgs):
+                yield result
+
+            #From here on, the client's messages must have the right version
+            self._versionCheck = True
+
+            #Get and check ClientKeyExchange
+            for result in self._getMsg(ContentType.handshake,
+                                      HandshakeType.client_key_exchange,
+                                      cipherSuite):
+                if result in (0,1):
+                    yield result
+                else:
+                    break
+            clientKeyExchange = result
+            dh_Yc = clientKeyExchange.dh_Yc
+            if dh_Yc % dh_p == 0:
+                postFinishedError = (AlertDescription.illegal_parameter,
+                                     "Suspicious dh_Yc value")
+
+            #Calculate premaster secret
+            S = powMod(dh_Yc,dh_Xs,dh_p)
+            premasterSecret = numberToBytes(S)
+            
         #Create the session object
         self.session = Session()
         self.session._calcMasterSecret(self.version, premasterSecret,
@@ -1499,7 +1641,7 @@ class TLSConnection(TLSRecordLayer):
         #Calculate pending connection states
         self._calcPendingStates(clientRandom, serverRandom,
                                settings.cipherImplementations)
-
+        
         #Exchange ChangeCipherSpec and Finished messages
         for result in self._getFinished():
             yield result
